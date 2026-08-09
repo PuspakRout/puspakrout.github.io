@@ -1,26 +1,33 @@
-import { WebContainer } from 'https://unpkg.com/@webcontainer/api@1.5.1/dist/index.js';
-import { files } from './files.js';
+import { loadPyodide } from 'https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.mjs';
 
-let webcontainerInstance;
+let pyodideInstance;
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
 const statusBar = document.getElementById('status-bar');
 const outputArea = document.getElementById('output-area');
 const markdownPreview = document.getElementById('markdown-preview');
 
-// Initialize the virtual environment on window load
+// Initialize Pyodide and install markitdown package on window load
 window.addEventListener('load', async () => {
-    statusBar.textContent = "Booting virtual client runtime environment...";
-    webcontainerInstance = await WebContainer.boot();
-    await webcontainerInstance.mount(files);
-    
-    statusBar.textContent = "Installing markitdown-js dependencies inside browser...";
-    const installProcess = await webcontainerInstance.spawn('npm', ['install']);
-    await installProcess.exit;
-    
-    statusBar.textContent = "Ready! Drop a file to convert.";
-    dropZone.style.opacity = "1";
-    dropZone.style.pointerEvents = "auto";
+    try {
+        statusBar.textContent = 'Loading Pyodide runtime...';
+        pyodideInstance = await loadPyodide({
+            indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.7/full/'
+        });
+
+        statusBar.textContent = 'Installing Python markitdown package...';
+        await pyodideInstance.loadPackage('micropip');
+        const micropip = pyodideInstance.pyimport('micropip');
+        await micropip.install(['markitdown']);
+
+        statusBar.textContent = 'Ready! Drop a file to convert.';
+        dropZone.style.opacity = '1';
+        dropZone.style.pointerEvents = 'auto';
+    } catch (error) {
+        statusBar.textContent = 'Startup failed. Check console for details.';
+        console.error('Pyodide/markitdown boot error:', error);
+        alert('Failed to initialize Pyodide with Python markitdown. See browser console for details.');
+    }
 });
 
 dropZone.addEventListener('click', () => fileInput.click());
@@ -34,38 +41,32 @@ dropZone.addEventListener('drop', (e) => {
 });
 
 async function handleFile(file) {
-    if (!file || !webcontainerInstance) return;
+    if (!file || !pyodideInstance) return;
 
     statusBar.classList.remove('hidden');
     statusBar.textContent = `Converting "${file.name}" completely in your browser...`;
     outputArea.classList.add('hidden');
 
-    // Read file bytes locally into an ArrayBuffer array
-    const fileBytes = await file.arrayBuffer();
+    try {
+        const fileBytes = new Uint8Array(await file.arrayBuffer());
+        const targetPath = `/tmp/${file.name}`;
+        pyodideInstance.FS.writeFile(targetPath, fileBytes);
 
-    // Write file directly into the WebContainer virtual storage loop
-    await webcontainerInstance.fs.writeFile('/target-doc', new Uint8Array(fileBytes));
+        const escapedPath = targetPath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const markdown = await pyodideInstance.runPythonAsync(`
+from markitdown import MarkItDown
 
-    // Execute script via native shell simulation inside the browser tab
-    const runProcess = await webcontainerInstance.spawn('node', ['worker-convert.js']);
-    
-    let rawOutput = '';
-    runProcess.output.pipeTo(new WritableStream({
-        write(data) {
-            rawOutput += data;
-        }
-    }));
+converter = MarkItDown()
+result = converter.convert('${escapedPath}')
+result.text_content
+        `);
 
-    const exitCode = await runProcess.exit;
-    statusBar.classList.add('hidden');
-
-    if (exitCode === 0 && rawOutput.includes('---BEGIN_MARKDOWN---')) {
-        // Parse stream chunk between logs
-        const markdown = rawOutput.split('---BEGIN_MARKDOWN---\n')[1].split('\n---END_MARKDOWN---')[0];
         markdownPreview.value = markdown;
         outputArea.classList.remove('hidden');
-    } else {
+    } catch (error) {
         alert("Conversion failed. Check browser console logs for deep errors.");
-        console.error("Shell Output logs:\n", rawOutput);
+        console.error('Pyodide conversion error:', error);
+    } finally {
+        statusBar.classList.add('hidden');
     }
 }
