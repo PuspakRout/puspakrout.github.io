@@ -1,4 +1,4 @@
-import { WebContainer } from 'https://jsdelivr.net';
+import { WebContainer } from 'https://unpkg.com/@webcontainer/api@1.5.1/dist/index.js';
 import { files } from './files.js';
 
 let webcontainerInstance;
