@@ -17,8 +17,49 @@ window.addEventListener('load', async () => {
 
         statusBar.textContent = 'Installing Python markitdown package...';
         await pyodideInstance.loadPackage('micropip');
-        const micropip = pyodideInstance.pyimport('micropip');
-        await micropip.install(['markitdown']);
+        await pyodideInstance.runPythonAsync(`
+import micropip
+
+# Install only pure-python prerequisites, then install markitdown without deps
+# because magika -> onnxruntime wheels are not available in Pyodide.
+await micropip.install([
+    'beautifulsoup4',
+    'charset-normalizer',
+    'defusedxml',
+    'markdownify',
+    'requests',
+])
+await micropip.install('markitdown==0.1.7', deps=False)
+
+import sys
+import types
+
+# Provide a tiny fallback module when magika is unavailable in Pyodide.
+try:
+    import magika  # noqa: F401
+except Exception:
+    fallback_magika = types.ModuleType('magika')
+
+    class _FallbackOutput:
+        def __init__(self):
+            self.mime_type = None
+            self.extensions = []
+            self.group = None
+            self.label = None
+
+    class _FallbackResult:
+        def __init__(self):
+            self.output = _FallbackOutput()
+
+    class Magika:
+        def identify_stream(self, _file_stream):
+            return _FallbackResult()
+
+    fallback_magika.Magika = Magika
+    sys.modules['magika'] = fallback_magika
+
+from markitdown import MarkItDown  # noqa: F401
+        `);
 
         statusBar.textContent = 'Ready! Drop a file to convert.';
         dropZone.style.opacity = '1';
